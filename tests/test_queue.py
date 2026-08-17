@@ -18,12 +18,25 @@ async def test_send_job_message_when_no_connection_string():
 
 @pytest.mark.asyncio
 async def test_send_job_message_success():
-    with patch.object(settings, "service_bus_connection_string", "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=testkey="):
+    with patch.object(
+        settings,
+        "service_bus_connection_string",
+        "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=testkey=",
+    ):
         with patch("app.queue.ServiceBusClient") as mock_sb_class:
             mock_sender = AsyncMock()
-            mock_client = AsyncMock()
-            mock_client.get_queue_sender.return_value.__aenter__.return_value = mock_sender
-            mock_sb_class.from_connection_string.return_value.__aenter__.return_value = mock_client
+            mock_sender_cm = MagicMock()
+            mock_sender_cm.__aenter__ = AsyncMock(return_value=mock_sender)
+            mock_sender_cm.__aexit__ = AsyncMock(return_value=None)
+
+            mock_client = MagicMock()
+            mock_client.get_queue_sender.return_value = mock_sender_cm
+
+            mock_client_cm = MagicMock()
+            mock_client_cm.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client_cm.__aexit__ = AsyncMock(return_value=None)
+
+            mock_sb_class.from_connection_string.return_value = mock_client_cm
 
             result = await send_job_message("job-123", "generate_report")
             assert result is True
@@ -32,7 +45,11 @@ async def test_send_job_message_success():
 
 @pytest.mark.asyncio
 async def test_send_job_message_handles_exception_gracefully():
-    with patch.object(settings, "service_bus_connection_string", "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=testkey="):
+    with patch.object(
+        settings,
+        "service_bus_connection_string",
+        "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=testkey=",
+    ):
         with patch("app.queue.ServiceBusClient") as mock_sb_class:
             mock_sb_class.from_connection_string.side_effect = Exception("Service Bus unreachable")
 
