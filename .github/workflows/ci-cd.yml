@@ -10,7 +10,7 @@ on:
 
 env:
   PYTHON_VERSION: '3.12'
-  AZURE_WEBAPP_NAME: 'CHANGE-ME-your-app-service-name' # Replace with your Azure Web App name
+  AZURE_WEBAPP_NAME: 'samarth-job-api-2026'
 
 jobs:
   test:
