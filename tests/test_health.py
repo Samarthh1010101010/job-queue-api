@@ -1,21 +1,21 @@
-from fastapi.testclient import TestClient
-
-from app.main import app
-
-client = TestClient(app)
-
-
-def test_health_returns_200():
+def test_health_returns_200(client):
     response = client.get("/health")
     assert response.status_code == 200
 
 
-def test_health_returns_ok_status():
+def test_health_reports_database_status(client):
     response = client.get("/health")
-    assert response.json() == {"status": "ok"}
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "ok"
+    assert data["database"] == "connected"
+    assert data["phase"] == 1
 
 
-def test_root_reports_phase():
+def test_root_reports_service_metadata(client):
     response = client.get("/")
     assert response.status_code == 200
-    assert response.json()["phase"] == 0
+    data = response.json()
+    assert data["phase"] == 1
+    assert "service" in data
+    assert data["docs_url"] == "/docs"

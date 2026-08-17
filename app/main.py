@@ -1,33 +1,64 @@
-import sys
 import os
+import sys
+from contextlib import asynccontextmanager
 
+# Ensure packaged dependencies are in sys.path on Azure Linux App Service
 site_packages = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".python_packages", "lib", "site-packages")
 if os.path.exists(site_packages) and site_packages not in sys.path:
     sys.path.insert(0, site_packages)
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response, status
+from app.config import settings
+from app.db import check_db_health, init_db
+from app.routers.jobs import router as jobs_router
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Initialize database tables on startup
+    await init_db()
+    yield
+    # Cleanup on shutdown (if any)
+
 
 app = FastAPI(
-    title="Job Queue & Status API",
-    version="0.1.0",
-    description="Asynchronous job-processing service. Built in phases.",
+    title=settings.app_title,
+    version=settings.app_version,
+    description="Asynchronous job-processing service. Built in phases as a walking skeleton.",
+    lifespan=lifespan,
 )
 
+# Mount Routers
+app.include_router(jobs_router)
 
-@app.get("/health")
-def health() -> dict:
+
+@app.get(
+    "/health",
+    summary="Service Health and Database Connectivity Check",
+    tags=["Health"],
+)
+async def health(response: Response) -> dict:
     """
-    Liveness check.
-
-    Phase 0 intentionally has no dependencies (no DB, no queue). The goal
-    right now is to prove the deploy pipeline works end to end — GitHub
-    Actions building and shipping this exact endpoint to Azure App Service —
-    before any business logic is layered on top. Once Postgres is added in
-    Phase 1, this will report DB connectivity too.
+    Liveness and database connectivity probe.
+    Returns HTTP 200 if both the API and database connection are healthy.
     """
-    return {"status": "ok"}
+    db_ok = await check_db_health()
+    if not db_ok:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return {"status": "degraded", "phase": settings.app_phase, "database": "disconnected"}
+
+    return {"status": "ok", "phase": settings.app_phase, "database": "connected"}
 
 
-@app.get("/")
+@app.get(
+    "/",
+    summary="Root Service Info",
+    tags=["Info"],
+)
 def root() -> dict:
-    return {"service": "job-queue-api", "phase": 0}
+    return {
+        "service": settings.app_title,
+        "version": settings.app_version,
+        "phase": settings.app_phase,
+        "docs_url": "/docs",
+    }
