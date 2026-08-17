@@ -25,7 +25,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.app_title,
     version=settings.app_version,
-    description="Asynchronous job-processing service. Built in phases as a walking skeleton.",
+    description="Job submission and status-tracking service. Built in phases as a walking skeleton.",
     lifespan=lifespan,
 )
 

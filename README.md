@@ -1,8 +1,12 @@
 # Job Queue & Status API
 
-An asynchronous job-processing service built as a walking skeleton: each
-phase adds exactly one new integration point, deployed and verified
-with continuous integration.
+A job submission and status-tracking REST API, built as a walking skeleton:
+each phase adds exactly one new integration point, deployed and verified
+with continuous integration. Currently (Phase 1): jobs are created and
+tracked through a status lifecycle in PostgreSQL. There is no queue
+consumer yet — a job can be created (`queued`) or cancelled (`cancelled`),
+but nothing currently transitions it to `processing`/`completed`/`failed`.
+That worker is future scope (Phase 3), not yet built.
 
 ## Architecture & Features
 
