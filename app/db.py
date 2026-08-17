@@ -6,6 +6,7 @@ No ORM — just a pool, raw SQL in init_db(), and a health-check query.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Optional
 
@@ -38,12 +39,30 @@ _CREATE_INDEXES_SQL = [
 ]
 
 
+async def _init_connection(conn: asyncpg.Connection) -> None:
+    """Register JSON codecs so JSON and JSONB columns auto-encode/decode as Python dicts."""
+    for type_name in ("json", "jsonb"):
+        try:
+            await conn.set_type_codec(
+                type_name,
+                encoder=json.dumps,
+                decoder=json.loads,
+                schema="pg_catalog",
+            )
+        except Exception:
+            logger.warning(f"Could not register codec for {type_name}")
+
+
 async def connect_db() -> None:
     """Create the asyncpg connection pool."""
     global pool
     dsn = settings.database_url
-    # asyncpg accepts postgresql:// natively, no conversion needed.
-    pool = await asyncpg.create_pool(dsn=dsn, min_size=2, max_size=10)
+    pool = await asyncpg.create_pool(
+        dsn=dsn,
+        min_size=2,
+        max_size=10,
+        init=_init_connection,
+    )
     logger.info("Database pool created.")
 
 
