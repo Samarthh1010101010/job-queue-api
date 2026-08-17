@@ -27,10 +27,12 @@ def get_db_pool() -> asyncpg.Pool:
     "",
     status_code=status.HTTP_202_ACCEPTED,
     response_model=JobResponse,
-    summary="Submit a new asynchronous job",
+    summary="Submit a new job",
     description=(
         "Accepts a job specification, saves it to the database with "
-        "`queued` status, dispatches to Azure Service Bus queue, and returns HTTP 202."
+        "`queued` status, and returns HTTP 202. (If a Service Bus connection "
+        "string is configured, also attempts to publish a queue message — "
+        "not enabled in this deployment.)"
     ),
 )
 async def submit_job(
