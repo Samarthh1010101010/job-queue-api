@@ -8,7 +8,7 @@ with continuous integration.
 
 - **Framework**: FastAPI (async ASGI)
 - **Database Layer**: Direct PostgreSQL with `asyncpg` connection pooling and native JSONB serialization
-- **Message Broker**: Azure Service Bus (Producer side with asynchronous dispatch and resilient fallback)
+- **Message Broker**: Azure Service Bus producer code exists (`app/queue.py`) but is not yet wired to a real Service Bus namespace — see Phase 2 status below
 - **CI/CD**: GitHub Actions pipeline running automated test suite against PostgreSQL 16 container, deploying to Azure App Service
 - **Hosting**: Azure Linux App Service (`samarth-job-api-2026`)
 
@@ -16,7 +16,7 @@ with continuous integration.
 
 - [x] **Phase 0** — bare FastAPI app + CI, deployed to Azure App Service
 - [x] **Phase 1** — Database layer (`asyncpg` + PostgreSQL) + full `/jobs` CRUD API
-- [x] **Phase 2** — Azure Service Bus integration (`POST /jobs` enqueues to `jobs` queue)
+- [ ] **Phase 2** — Service Bus producer code is written, but no real Service Bus namespace has been provisioned and no message has ever been confirmed landing in a live queue. `SERVICE_BUS_CONNECTION_STRING` is unset everywhere, so `POST /jobs` currently no-ops on the queue send by design.
 - [ ] **Phase 3** — Worker (Azure Function or background consumer)
 - [ ] **Phase 4** — Application Insights + structured JSON logging
 
