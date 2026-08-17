@@ -3,6 +3,7 @@
 **Last updated:** 2026-08-17
 **Repo:** https://github.com/Samarthh1010101010/job-queue-api
 **Azure resource:** App Service `samarth-job-api-2026` in resource group `job-queue-api-rg`
+**Live URL (Phase 1, verified):** https://samarth-job-api-2026-b0h2hchagsdrafad.centralindia-01.azurewebsites.net
 
 This is the single source of truth. Read Section 1 before touching anything else.
 
@@ -43,49 +44,63 @@ Self-imposed 2-day build budget.
 
 ---
 
-## 3. Verified state as of 2026-08-17
+## 3. Verified state as of 2026-08-17 (end of day)
 
 Everything in this section was directly observed, not inferred.
 
-### Works
+### Works — Phase 1 is live
 
-- **Code for Phases 0, 1, and 2 all exists and is committed.** A prior session built
-  further than expected. `app/` contains `main.py`, `config.py`, `db.py`, `crud.py`,
-  `models.py`, `schemas.py`, `queue.py`, `routers/jobs.py`.
-- **Git is clean.** 13 commits, `main` only, local matches `origin/main`. No secrets
-  or venv tracked. `.gitignore` correctly excludes `.env` and `venv/`.
-- **CI is green.** Run #12 (commit `929d2f7`) succeeded — both `Test & Lint` and
-  `Build & Deploy to Azure App Service`. The Azure publish profile secret works and
-  the deploy action delivers the package.
-- **Tests pass in CI** against a Postgres 16 service container.
-- **Azure startup command is correctly set** to `bash startup.sh`.
+- **The live app is up and correctly wired to a prod Neon database.** Verified by
+  directly curling it, not by trusting a green CI run:
+  - `GET /health` → `200 {"status":"ok","phase":2,"database":"connected"}`
+  - `GET /` → `200`, correct service metadata
+  - `POST /jobs` → `202`, row created
+  - `GET /jobs/{id}` → `200`, correct row
+  - `GET /jobs?status=queued&limit=5` → `200`, correct filtered list
+  - `DELETE /jobs/{id}` on a queued job → `200`, status becomes `cancelled`
+  - `DELETE /jobs/{id}` again → `409`, correct conflict message
+  - `DELETE /jobs/{nonexistent}` → `404`
+- **The real live URL is NOT the plain name.**
+  `samarth-job-api-2026.azurewebsites.net` returns NXDOMAIN — confirmed via three
+  independent public DNS resolvers (Google, Cloudflare, Quad9), not a transient
+  propagation issue. The Central India region assigns App Service a randomized
+  hostname suffix. **The actual live URL is:**
+  `https://samarth-job-api-2026-b0h2hchagsdrafad.centralindia-01.azurewebsites.net`
+  (visible on the App Service Overview page under "Default domain"). Use this URL
+  for everything — the GitHub Actions deploy step still targets the app by its
+  Azure resource name (`samarth-job-api-2026`), which is unaffected and correct.
+- **Public network access was checked and is fine** — "Enabled with no access
+  restrictions." That was a plausible hypothesis for the DNS issue but ruled out;
+  the randomized-hostname explanation above is the confirmed cause.
+- **Two separate Neon databases now exist**, dev and prod, matching the
+  dev/prod-isolation rule. Dev DB confirmed working via a real local `pytest -v`
+  run: 18/18 passed. Prod DB confirmed working two ways: a direct `asyncpg.connect`
+  + `SELECT 1`, and running the app's actual `connect_db()` + `init_db()` startup
+  logic against it directly (creates the `jobs` table + indexes) before ever
+  touching Azure.
+- `DATABASE_URL` and `SCM_DO_BUILD_DURING_DEPLOYMENT=true` are now set correctly in
+  Azure App Service → Configuration, and Application Logging (Filesystem, Verbose)
+  is on.
+- **Dead `render.yaml` deleted** and **README's false Phase 2 "done" claim
+  corrected** (commit `3b30b1c`, pushed and deployed).
+- **Git is clean.** `main` matches `origin/main`. `.gitignore` correctly excludes
+  `.env` and `venv/`.
 
-### Broken
+### Still open
 
-- **The deployed app does not serve.** `/health`, `/`, and `/docs` all return empty
-  bodies. Deploy succeeding is not the same as the app starting.
-- **`DATABASE_URL` is not set in Azure.** App settings contained only
-  `SCM_DO_BUILD_DURING_DEPLOYMENT`. The app therefore falls back to the hardcoded
-  default in `config.py` (`postgresql://postgres:postgres@localhost:5432/postgres`),
-  pointing at a Postgres that does not exist inside the App Service container.
-- **`SCM_DO_BUILD_DURING_DEPLOYMENT` was misconfigured** — it held a non-boolean
-  string (a password had been pasted into the field). Azure reads anything that
-  isn't `true` as false, so Oryx skipped dependency installation entirely.
-  *That password should be treated as exposed and rotated wherever it was used.*
-- **No Neon database exists yet.** No `.env` on disk, so local development cannot
-  run either. This blocks everything else.
+- **Rotate the password that was previously pasted into
+  `SCM_DO_BUILD_DURING_DEPLOYMENT`.** Flagged to the user; not something this
+  session can see or fix directly — needs to be done wherever that password is
+  actually used, outside of Azure.
 
 ### Unverified — do not claim
 
 - **Phase 2 (Azure Service Bus) has never sent a message to a real queue.** All
   three tests in `tests/test_queue.py` mock `ServiceBusClient` entirely.
-  `SERVICE_BUS_CONNECTION_STRING` is referenced only in `config.py` (empty default)
-  and `queue.py`. It is set nowhere in CI, nowhere in Azure. `send_job_message`
-  therefore returns `False` on every `POST /jobs` in production, silently, by
-  design. **The README currently marks Phase 2 as done. That claim is not
-  supported.**
-- **The `/jobs` endpoints have never been confirmed working against a live
-  deployment** — only against CI's throwaway Postgres container.
+  `SERVICE_BUS_CONNECTION_STRING` is unset everywhere. `send_job_message` returns
+  `False` on every `POST /jobs` in production, silently, by design. README now
+  reflects this accurately. Do not attempt to verify this without confirming with
+  the user first — out of scope for this session per Section 1.
 
 ### Changed in this session (2026-08-17)
 
@@ -108,24 +123,23 @@ installs anything. Harmless, but dead. Remove it if you want a cleaner story.
 
 ## 4. Next steps, in order
 
-1. **Create the Neon database.** Two databases — one dev, one prod — so local
-   testing never touches live data. Neon replaces both Docker and a local Postgres
-   install. Copy the prod connection string.
-2. **Set `DATABASE_URL`** in Azure → Settings → Environment variables → App settings.
-3. **Set `SCM_DO_BUILD_DURING_DEPLOYMENT` to `true`.**
-4. **Enable application logging** — Monitoring → App Service logs → Application
-   logging (Filesystem) = On, level Verbose. Then use **Log stream**, not the
-   Activity Log. The Activity Log only shows control-plane operations (deploys,
-   config edits, restarts) and cannot explain a boot failure.
-5. **Push to trigger CI**, then hit the live `/health`. Success looks like
-   `{"status":"ok","phase":2,"database":"connected"}`. Anything else — read the log
-   stream.
-6. **Verify all four `/jobs` endpoints against the live URL**, not just CI.
+Steps 1–6 below are done and verified (see Section 3). Remaining:
+
+1. ~~Create the Neon database~~ — done, dev + prod both exist and are confirmed
+   working.
+2. ~~Set `DATABASE_URL` in Azure~~ — done.
+3. ~~Set `SCM_DO_BUILD_DURING_DEPLOYMENT` to `true`~~ — done.
+4. ~~Enable application logging~~ — done (Filesystem, Verbose).
+5. ~~Push to trigger CI, verify live `/health`~~ — done, confirmed at the real
+   (randomized-suffix) hostname, see Section 3.
+6. ~~Verify all four `/jobs` endpoints against the live URL~~ — done, including the
+   409 and 404 edge cases.
 7. **Decide Phase 2:** either provision a real Service Bus namespace and confirm a
    message actually lands in the queue, or remove the claim from the README and
-   keep it off the resume.
-8. **Correct the README** so it describes only what is verified live.
-9. **Stop.** No Phase 3 (worker), no Phase 4 (Application Insights).
+   keep it off the resume. **Do not start this without asking the user first** —
+   it was explicitly out of scope for the session that got Phase 1 live.
+8. ~~Correct the README~~ — done.
+9. **Stop here for now.** No Phase 3 (worker), no Phase 4 (Application Insights).
 
 ---
 
