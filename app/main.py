@@ -1,6 +1,9 @@
+import logging
 import os
 import sys
 from contextlib import asynccontextmanager
+
+logger = logging.getLogger(__name__)
 
 # Ensure packaged dependencies are in sys.path on Azure Linux App Service
 site_packages = os.path.join(
@@ -18,9 +21,12 @@ from app.routers.jobs import router as jobs_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: create pool → create tables
-    await connect_db()
-    await init_db()
+    # Startup: attempt DB pool creation and table initialization
+    try:
+        await connect_db()
+        await init_db()
+    except Exception as exc:
+        logger.warning(f"Initial DB connection deferred: {exc}")
     yield
     # Shutdown: close pool
     await close_db()

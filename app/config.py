@@ -9,15 +9,16 @@ class Settings(BaseSettings):
     )
 
     app_title: str = "Job Queue & Status API"
-    app_version: str = "0.2.0"
-    app_phase: int = 1
+    app_version: str = "0.3.0"
+    app_phase: int = 2
 
     # PostgreSQL — CI uses the Postgres service container at this default.
-    # Production overrides via the DATABASE_URL env var set in Azure App Service.
+    # Production overrides via the DATABASE_URL env var (e.g. Neon PostgreSQL).
     database_url: str = "postgresql://postgres:postgres@localhost:5432/postgres"
 
-    # Phase 2 — Service Bus (empty = skip sending)
+    # Phase 2 — Service Bus (empty = skip sending gracefully)
     service_bus_connection_string: str = ""
+    service_bus_queue_name: str = "jobs"
 
     # Phase 4 — Application Insights (empty = skip instrumentation)
     appinsights_connection_string: str = ""

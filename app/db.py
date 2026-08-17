@@ -87,9 +87,14 @@ async def init_db() -> None:
 
 
 async def check_db_health() -> bool:
-    """Run SELECT 1 to verify the database is reachable."""
+    """Run SELECT 1 to verify the database is reachable, reconnecting if needed."""
+    global pool
     if pool is None:
-        return False
+        try:
+            await connect_db()
+            await init_db()
+        except Exception:
+            return False
     try:
         async with pool.acquire() as conn:
             await conn.fetchval("SELECT 1")
