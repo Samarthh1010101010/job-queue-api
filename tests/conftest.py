@@ -1,19 +1,18 @@
-import asyncio
 import pytest
 from fastapi.testclient import TestClient
 
-from app.db import init_db
 from app.main import app
 
 
-@pytest.fixture(scope="session", autouse=True)
-def setup_test_database():
-    """Ensure database tables are created before running tests."""
-    asyncio.run(init_db())
-
-
-@pytest.fixture
+@pytest.fixture()
 def client():
-    """TestClient context manager fixture ensuring lifespan events run."""
+    """
+    TestClient with lifespan=True so the app's startup (connect_db + init_db)
+    and shutdown (close_db) events fire.
+
+    DATABASE_URL is picked up from the environment — in CI that points at the
+    Postgres service container; locally it points at a Neon dev database (or a
+    local Postgres instance) via .env.
+    """
     with TestClient(app) as test_client:
         yield test_client

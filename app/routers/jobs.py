@@ -1,11 +1,11 @@
 from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import crud
-from app.db import get_db
+from app.db import get_pool
 from app.models import JobStatus
-from app.schemas import JobCreate, JobListResponse, JobResponse, JobStatusUpdate
+from app.schemas import JobCreate, JobListResponse, JobResponse
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 
@@ -15,14 +15,20 @@ router = APIRouter(prefix="/jobs", tags=["Jobs"])
     status_code=status.HTTP_202_ACCEPTED,
     response_model=JobResponse,
     summary="Submit a new asynchronous job",
-    description="Accepts a job specification, saves it to the database with `pending` status, and immediately returns a job ticket with HTTP 202.",
+    description=(
+        "Accepts a job specification, saves it to the database with "
+        "`queued` status, and immediately returns a job ticket with HTTP 202."
+    ),
 )
-async def submit_job(
-    job_in: JobCreate,
-    db: AsyncSession = Depends(get_db),
-) -> JobResponse:
-    job = await crud.create_job(db=db, job_in=job_in)
-    return JobResponse.model_validate(job)
+async def submit_job(job_in: JobCreate) -> JobResponse:
+    pool = get_pool()
+    row = await crud.create_job(
+        pool,
+        job_type=job_in.job_type,
+        target=job_in.target,
+        metadata=job_in.metadata,
+    )
+    return JobResponse(**row)
 
 
 @router.get(
@@ -30,19 +36,17 @@ async def submit_job(
     status_code=status.HTTP_200_OK,
     response_model=JobResponse,
     summary="Get job status and results",
-    description="Retrieve the current status, output results, and lifecycle timestamps for a specific job ID.",
+    description="Retrieve the current status and details for a specific job ID.",
 )
-async def get_job_status(
-    job_id: str,
-    db: AsyncSession = Depends(get_db),
-) -> JobResponse:
-    job = await crud.get_job(db=db, job_id=job_id)
-    if not job:
+async def get_job_status(job_id: str) -> JobResponse:
+    pool = get_pool()
+    row = await crud.get_job(pool, job_id=job_id)
+    if row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Job with ID '{job_id}' was not found.",
         )
-    return JobResponse.model_validate(job)
+    return JobResponse(**row)
 
 
 @router.get(
@@ -50,58 +54,53 @@ async def get_job_status(
     status_code=status.HTTP_200_OK,
     response_model=JobListResponse,
     summary="List all jobs",
-    description="Retrieve a paginated list of jobs, optionally filtered by status (pending, in_progress, completed, failed).",
+    description="Retrieve a list of jobs, optionally filtered by status.",
 )
 async def list_all_jobs(
-    status_filter: Optional[JobStatus] = Query(None, alias="status", description="Filter jobs by status"),
-    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
-    page_size: int = Query(20, ge=1, le=100, description="Number of items per page"),
-    db: AsyncSession = Depends(get_db),
+    status_filter: Optional[JobStatus] = Query(
+        None, alias="status", description="Filter jobs by status"
+    ),
+    limit: int = Query(20, ge=1, le=100, description="Max number of jobs to return"),
 ) -> JobListResponse:
+    pool = get_pool()
     status_val = status_filter.value if status_filter else None
-    jobs, total = await crud.list_jobs(db=db, status=status_val, page=page, page_size=page_size)
+    jobs, total = await crud.list_jobs(pool, status=status_val, limit=limit)
     return JobListResponse(
-        jobs=[JobResponse.model_validate(j) for j in jobs],
+        jobs=[JobResponse(**j) for j in jobs],
         total=total,
-        page=page,
-        page_size=page_size,
     )
-
-
-@router.patch(
-    "/{job_id}/status",
-    status_code=status.HTTP_200_OK,
-    response_model=JobResponse,
-    summary="Update job status (internal / worker endpoint)",
-    description="Updates the state of a job, e.g. marking it as in_progress, completed (with result payload), or failed (with error message).",
-)
-async def update_job(
-    job_id: str,
-    status_in: JobStatusUpdate,
-    db: AsyncSession = Depends(get_db),
-) -> JobResponse:
-    job = await crud.update_job_status(db=db, job_id=job_id, status_in=status_in)
-    if not job:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job with ID '{job_id}' was not found.",
-        )
-    return JobResponse.model_validate(job)
 
 
 @router.delete(
     "/{job_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    summary="Delete or cancel a job",
-    description="Removes the specified job record from the database.",
+    status_code=status.HTTP_200_OK,
+    response_model=JobResponse,
+    summary="Cancel a queued job",
+    description=(
+        "Sets a job's status to 'cancelled'. Only works for jobs that are "
+        "still in 'queued' status; returns 409 Conflict otherwise."
+    ),
 )
-async def remove_job(
-    job_id: str,
-    db: AsyncSession = Depends(get_db),
-) -> None:
-    deleted = await crud.delete_job(db=db, job_id=job_id)
-    if not deleted:
+async def cancel_job(job_id: str) -> JobResponse:
+    pool = get_pool()
+    result = await crud.cancel_job(pool, job_id=job_id)
+
+    # Not found
+    if result is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Job with ID '{job_id}' was not found.",
         )
+
+    # Already processing/completed/failed/cancelled → 409
+    if isinstance(result, str):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Job can only be cancelled when in 'queued' status. "
+                f"Current status: '{result}'."
+            ),
+        )
+
+    # Success — return the now-cancelled job
+    return JobResponse(**result)

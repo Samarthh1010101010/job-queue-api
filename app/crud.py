@@ -1,84 +1,116 @@
-from typing import List, Optional, Tuple
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+"""
+CRUD helpers — raw SQL via an asyncpg connection pool.
 
-from app.models import Job, JobStatus
-from app.schemas import JobCreate, JobStatusUpdate
+Every function acquires a connection from the pool, executes one or two
+queries, and returns plain dicts (or None / a sentinel string).
+"""
 
+from __future__ import annotations
 
-async def create_job(db: AsyncSession, job_in: JobCreate) -> Job:
-    """Create and persist a new job in PENDING state."""
-    job = Job(
-        task_type=job_in.task_type,
-        payload=job_in.payload,
-        status=JobStatus.PENDING.value,
-    )
-    db.add(job)
-    await db.flush()
-    await db.refresh(job)
-    return job
+import json
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple, Union
+from uuid import UUID
+
+import asyncpg
 
 
-async def get_job(db: AsyncSession, job_id: str) -> Optional[Job]:
-    """Retrieve a single job by its UUID string."""
-    query = select(Job).where(Job.id == job_id)
-    result = await db.execute(query)
-    return result.scalar_one_or_none()
+# ── helpers ──────────────────────────────────────────────────────────
+
+def _row_to_dict(record: asyncpg.Record) -> Dict[str, Any]:
+    """Convert an asyncpg Record to a JSON-friendly dict."""
+    d: Dict[str, Any] = dict(record)
+    # UUID → str
+    if isinstance(d.get("id"), UUID):
+        d["id"] = str(d["id"])
+    # ensure datetimes are ISO strings for Pydantic
+    for key in ("created_at", "updated_at"):
+        val = d.get(key)
+        if isinstance(val, datetime):
+            d[key] = val.isoformat()
+    # asyncpg auto-decodes JSONB to Python dicts, but default to {} / None.
+    if d.get("metadata") is None:
+        d["metadata"] = {}
+    return d
+
+
+# ── CRUD ─────────────────────────────────────────────────────────────
+
+async def create_job(
+    pool: asyncpg.Pool,
+    job_type: str,
+    target: str,
+    metadata: Dict[str, Any],
+) -> Dict[str, Any]:
+    """INSERT a new job in 'queued' status and return the full row."""
+    query = """
+        INSERT INTO jobs (job_type, target, metadata)
+        VALUES ($1, $2, $3::jsonb)
+        RETURNING *;
+    """
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(query, job_type, target, json.dumps(metadata))
+    return _row_to_dict(row)  # type: ignore[arg-type]
+
+
+async def get_job(
+    pool: asyncpg.Pool,
+    job_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Fetch a single job by UUID. Returns None if not found."""
+    query = "SELECT * FROM jobs WHERE id = $1;"
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(query, UUID(job_id))
+    if row is None:
+        return None
+    return _row_to_dict(row)
 
 
 async def list_jobs(
-    db: AsyncSession,
+    pool: asyncpg.Pool,
     status: Optional[str] = None,
-    page: int = 1,
-    page_size: int = 20,
-) -> Tuple[List[Job], int]:
-    """List jobs with optional status filter and pagination."""
-    query = select(Job)
-    count_query = select(func.count(Job.id))
-
+    limit: int = 20,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """
+    List jobs ordered by created_at DESC, with optional status filter.
+    Returns (jobs, total_count).
+    """
     if status:
-        query = query.where(Job.status == status)
-        count_query = count_query.where(Job.status == status)
+        count_q = "SELECT count(*) FROM jobs WHERE status = $1;"
+        data_q = "SELECT * FROM jobs WHERE status = $1 ORDER BY created_at DESC LIMIT $2;"
+        async with pool.acquire() as conn:
+            total = await conn.fetchval(count_q, status)
+            rows = await conn.fetch(data_q, status, limit)
+    else:
+        count_q = "SELECT count(*) FROM jobs;"
+        data_q = "SELECT * FROM jobs ORDER BY created_at DESC LIMIT $1;"
+        async with pool.acquire() as conn:
+            total = await conn.fetchval(count_q)
+            rows = await conn.fetch(data_q, limit)
 
-    # Get total count
-    total_result = await db.execute(count_query)
-    total = total_result.scalar_one()
-
-    # Get paginated slice
-    offset = (page - 1) * page_size
-    query = query.order_by(Job.created_at.desc()).offset(offset).limit(page_size)
-    result = await db.execute(query)
-    jobs = list(result.scalars().all())
-
-    return jobs, total
+    return [_row_to_dict(r) for r in rows], total
 
 
-async def update_job_status(
-    db: AsyncSession,
+async def cancel_job(
+    pool: asyncpg.Pool,
     job_id: str,
-    status_in: JobStatusUpdate,
-) -> Optional[Job]:
-    """Update job status, result payload, and/or error information."""
-    job = await get_job(db, job_id)
-    if not job:
-        return None
+) -> Union[Dict[str, Any], str, None]:
+    """
+    Cancel a job.
 
-    job.status = status_in.status.value if isinstance(status_in.status, JobStatus) else str(status_in.status)
-    if status_in.result is not None:
-        job.result = status_in.result
-    if status_in.error is not None:
-        job.error = status_in.error
-
-    await db.flush()
-    await db.refresh(job)
-    return job
-
-
-async def delete_job(db: AsyncSession, job_id: str) -> bool:
-    """Delete a job by ID."""
-    job = await get_job(db, job_id)
-    if not job:
-        return False
-    await db.delete(job)
-    await db.flush()
-    return True
+    Returns:
+        dict  — the updated job (status='cancelled')
+        None  — job not found
+        str   — the current status if the job isn't in 'queued' state (→ 409)
+    """
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM jobs WHERE id = $1;", UUID(job_id))
+        if row is None:
+            return None
+        if row["status"] != "queued":
+            return row["status"]  # caller should return 409
+        updated = await conn.fetchrow(
+            "UPDATE jobs SET status = 'cancelled', updated_at = now() WHERE id = $1 RETURNING *;",
+            UUID(job_id),
+        )
+    return _row_to_dict(updated)  # type: ignore[arg-type]

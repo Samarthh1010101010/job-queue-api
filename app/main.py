@@ -3,22 +3,27 @@ import sys
 from contextlib import asynccontextmanager
 
 # Ensure packaged dependencies are in sys.path on Azure Linux App Service
-site_packages = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".python_packages", "lib", "site-packages")
+site_packages = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)),
+    ".python_packages", "lib", "site-packages",
+)
 if os.path.exists(site_packages) and site_packages not in sys.path:
     sys.path.insert(0, site_packages)
 
 from fastapi import FastAPI, Response, status
 from app.config import settings
-from app.db import check_db_health, init_db
+from app.db import check_db_health, close_db, connect_db, init_db
 from app.routers.jobs import router as jobs_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize database tables on startup
+    # Startup: create pool → create tables
+    await connect_db()
     await init_db()
     yield
-    # Cleanup on shutdown (if any)
+    # Shutdown: close pool
+    await close_db()
 
 
 app = FastAPI(

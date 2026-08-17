@@ -1,52 +1,87 @@
-from typing import AsyncGenerator
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+"""
+Database connection management using a raw asyncpg connection pool.
+
+No ORM — just a pool, raw SQL in init_db(), and a health-check query.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Optional
+
+import asyncpg
 
 from app.config import settings
-from app.models import Base
 
-# Create async database engine
-engine = create_async_engine(
-    settings.async_database_url,
-    echo=False,
-    future=True,
-    pool_pre_ping=True,
-)
+logger = logging.getLogger(__name__)
 
-# Async session factory
-AsyncSessionLocal = async_sessionmaker(
-    bind=engine,
-    class_=AsyncSession,
-    expire_on_commit=False,
-    autocommit=False,
-    autoflush=False,
-)
+# Module-level pool; set during lifespan startup.
+pool: Optional[asyncpg.Pool] = None
+
+_CREATE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS jobs (
+    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    job_type        TEXT        NOT NULL,
+    target          TEXT        NOT NULL,
+    metadata        JSONB       NOT NULL DEFAULT '{}',
+    status          TEXT        NOT NULL DEFAULT 'queued',
+    result          JSONB,
+    error_message   TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+"""
+
+_CREATE_INDEXES_SQL = [
+    "CREATE INDEX IF NOT EXISTS idx_jobs_status   ON jobs (status);",
+    "CREATE INDEX IF NOT EXISTS idx_jobs_job_type  ON jobs (job_type);",
+]
 
 
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """Dependency for obtaining an async database session."""
-    async with AsyncSessionLocal() as session:
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
-        finally:
-            await session.close()
+async def connect_db() -> None:
+    """Create the asyncpg connection pool."""
+    global pool
+    dsn = settings.database_url
+    # asyncpg accepts postgresql:// natively, no conversion needed.
+    pool = await asyncpg.create_pool(dsn=dsn, min_size=2, max_size=10)
+    logger.info("Database pool created.")
+
+
+async def close_db() -> None:
+    """Gracefully close the connection pool."""
+    global pool
+    if pool:
+        await pool.close()
+        pool = None
+        logger.info("Database pool closed.")
 
 
 async def init_db() -> None:
-    """Initialize database tables."""
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    """Create the jobs table (and indexes) if they don't already exist."""
+    if pool is None:
+        raise RuntimeError("Database pool is not initialized. Call connect_db() first.")
+    async with pool.acquire() as conn:
+        await conn.execute(_CREATE_TABLE_SQL)
+        for idx_sql in _CREATE_INDEXES_SQL:
+            await conn.execute(idx_sql)
+    logger.info("Database tables initialized.")
 
 
 async def check_db_health() -> bool:
-    """Execute a simple query to verify database connectivity."""
-    try:
-        async with AsyncSessionLocal() as session:
-            await session.execute(text("SELECT 1"))
-            return True
-    except Exception:
+    """Run SELECT 1 to verify the database is reachable."""
+    if pool is None:
         return False
+    try:
+        async with pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
+        return True
+    except Exception:
+        logger.exception("Database health check failed.")
+        return False
+
+
+def get_pool() -> asyncpg.Pool:
+    """Return the live pool, or raise if it was never created."""
+    if pool is None:
+        raise RuntimeError("Database pool is not available.")
+    return pool
